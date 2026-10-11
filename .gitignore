@@ -1,0 +1,30 @@
+# Datasets: públicos pero pesados (GBs) y de origen externo.
+# No se versionan — ver datasets_download/README.md para cómo obtenerlos.
+datasets/
+
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Artefactos de entrenamiento (checkpoints, logs de experimentos)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+wandb/
+mlruns/
+
+# Variables de entorno / credenciales
+.env
+
+# SO
+.DS_Store
+Thumbs.db
