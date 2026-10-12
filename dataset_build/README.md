@@ -44,6 +44,16 @@ El xlsx de RIDIRP tiene la columna `SERIE NUMBER (S)` **mal asignada para ~31 fi
 
 **Solución aplicada en `build_manifest.py`:** no se usa la columna `series` del xlsx como llave de join. En su lugar, para cada paciente se ordenan las filas del xlsx por PMA ascendente y los números de serie reales (del nombre de archivo) también ascendente, y se alinean por posición (rank cronológico). El `bag_id` final sí usa el número de serie real del archivo (que es el que agrupa las imágenes físicamente en disco).
 
+## Problema real encontrado y corregido: `stage` inconsistente dentro de un mismo bag (ROP-VL)
+
+Verificando el parquet ya construido (no en la planificación) se encontraron **91 bags de ROP-VL (4.9% de 1.867)** donde dos imágenes del mismo ojo+fecha traían `categories` de estadio distintas en el dataset original — ej. `ROPVL_173_2015-07-29_R` tiene una foto etiquetada `normal` y dos fotos `Stage 2 ROP` el mismo día, mismo ojo. La mayoría son estadios adyacentes (delta=1 en 76/91 casos), consistente con que distintas tomas capturan distintos campos de la retina (polo posterior vs. periferia) y no necesariamente un error de etiquetado.
+
+**Corrección aplicada en `build_manifest.py` (`reconcile_bag_stage`):** el `stage` final de un bag es el **máximo** entre sus imágenes — el hallazgo más avanzado visible en cualquier imagen define el estadio clínico real de ese ojo ese día (misma lógica de MIL: basta una instancia positiva para que la bolsa sea positiva).
+
+**Caso aparte, sin resolver por máximo:** 52 de esos bags mezclaban una imagen `A-ROP` o `Laser-treated ROP` (que ya tienen `stage=NaN` por diseño, no son comparables a la escala ordinal) con otra imagen del mismo ojo etiquetada `normal` o con un estadio numérico. Ahí **no** se aplica el máximo — asumir "normal" solo porque otra foto del mismo ojo se ve sana sería un error clínico real (un ojo con tratamiento láser ya tuvo ROP severa). Para estos 52 bags se deja `stage=NaN` en todas sus imágenes, y las flags `ap_rop`/`laser_treated` se propagan a nivel de bag (si una sola imagen del bag las traía, ahora las tienen todas). Cobertura final de `stage` en ROP-VL tras la corrección: 73% (antes de la corrección, antes de validar, el run original tenía datos per-imagen inconsistentes dentro del mismo bag).
+
+Se verificó con un script de consistencia que, tras la corrección, **0 bags** en los 3 datasets (RIDIRP, FARFUM, ROP-VL) tienen valores clínicos (`stage`/`plus`/`treatment`) distintos entre imágenes del mismo `bag_id`.
+
 ## Mapeo de etiquetas — decisiones y pendientes
 
 ### RIDIRP (`DIAGNOSIS CODE` → `stage`)
@@ -63,17 +73,29 @@ AP-ROP y status-post no se fuerzan a un estadio 0-5 porque no son comparables co
 
 RIDIRP no tiene columna de tratamiento → `treatment` siempre `None` para este origen.
 
-### FARFUM-RoP — consenso entre 5 raters, y un pendiente importante
+### FARFUM-RoP — columna "Label" (corrección importante, no estaba en la primera versión)
 
-Cada imagen tiene hasta 5 opiniones independientes (`grade`, `stage`, `diagnostic` por rater A-E). Se calculó consenso por **mayoría estricta** (>50% de los votos no-nulos, mínimo 3 votos) para `stage` y `treatment`.
+**Corrección a lo documentado antes:** el xlsx de `Dataset_Labels.xlsx` tiene un encabezado de 2 filas, y la fila 1 (la que se usaba como `header` al leer con pandas) deja el nombre de la última columna (R) en blanco — el nombre real, "Label", está en la fila 0. El primer intento de este manifiesto leía las columnas por posición pero nunca tocaba la columna R, así que esa columna quedó completamente ignorada.
 
-**Cobertura real tras aplicar mayoría estricta** (verificado corriendo el script, no estimado):
-- `stage`: 159 de 1.533 imágenes alcanzan consenso (13 stage=1, 146 stage=2). El resto son `grade=0` (normal, sin opinión de stage — 762 imágenes) o desacuerdo real entre raters sin mayoría (1.123 imágenes). Hay desacuerdo inter-rater genuino incluso cuando coinciden en que hay ROP.
-- `treatment`: 266 de 1.533 alcanzan consenso (119 revisit, 147 treatment). **Ningún caso alcanza consenso estricto en "no_treatment"** — no es un bug: el análisis muestra que "no_treatment" es la opción con más desacuerdo entre raters (gana por pluralidad simple solo 74 veces, nunca por mayoría estricta).
+`Label` es un **target oficial, con cobertura completa (1.533/1.533, cero nulos)** y exactamente 3 valores (`1`: 782, `2`: 479, `3`: 272) — a diferencia de `grade` (0-3, semántica sin confirmar) y de nuestro propio consenso por mayoría entre los 5 raters (cobertura baja, ver abajo). No es una función simple de ningún rater individual ni de la mayoría exacta de `grade`/`stage`, así que probablemente es la etiqueta de referencia que fijaron los propios curadores del dataset. Se mapeó `1→Normal, 2→Pre-Plus, 3→Plus` por correlación con `diagnostic` (`Label=3` casi nunca coincide con `revisit`, `Label=1` rara vez con `treatment`) y porque coincide con la descripción oficial de Figshare ("anotado como Normal/Pre-Plus/Plus") — la dirección del mapeo es una inferencia de alta confianza, no viene explícita en el archivo, así que **sigue valiendo la pena confirmarla contra el texto del paper** si se consigue acceso.
 
-Esto es una limitación real a documentar en la tesis: con mayoría estricta, el cabezal de Tratamiento entrena con ~17% de las imágenes de FARFUM. Alternativas a evaluar más adelante (no aplicadas todavía): bajar el umbral a pluralidad simple (más cobertura, menos confianza), o tratar las 5 etiquetas como *soft labels* en vez de forzar un consenso duro.
+Con esta corrección, **`plus` ahora tiene 100% de cobertura en FARFUM** (antes 0%, quedaba en `None` para todo el dataset).
 
-**Pendiente sin resolver:** la columna `grade` (valores 0-3 por rater) no tiene semántica confirmada. La ficha de Figshare describe FARFUM-RoP como anotado en 3 clases "Normal/Pre-Plus/Plus", pero la columna trae 4 valores distintos (0,1,2,3) — no es un mapeo 1:1 obvio y no se encontró el texto exacto del paper (Akbari et al. 2024, DOI `10.1038/s41597-024-03897-7`, no verificado de forma independiente — ver `datasets_download/README.md`) que lo aclare. **Por eso la columna unificada `plus` queda en `None` para todo FARFUM** en vez de adivinar el mapeo. Se preserva el valor crudo en `raw_grade_per_rater` (los 5 valores separados por `;`) para poder resolverlo sin re-extraer nada en cuanto se confirme la semántica contra el paper original.
+**Hallazgo adicional corregido:** 3 de los 68 pacientes (`patient44`, `patient55`, `patient57`) tenían la columna `Label` con 2 valores distintos entre sus propias imágenes (siempre categorías adyacentes: Normal/Pre-Plus o Pre-Plus/Plus) — mismo patrón de inconsistencia que se encontró en ROP-VL. Se resolvió igual: `reconcile_bag_plus` deja el paciente con el hallazgo más severo detectado en cualquiera de sus imágenes.
+
+### FARFUM-RoP — consenso entre 5 raters para `stage` y `treatment`
+
+Aparte de `Label`, cada imagen tiene hasta 5 opiniones independientes (`grade`, `stage`, `diagnostic` por rater A-E) que **sí están separadas por rater** (A, B, C, D, E — 5 oftalmólogos, consistente con la descripción oficial del dataset). Se calculó consenso por **mayoría estricta** (>50% de los votos no-nulos, mínimo 3 votos) para `stage` y `treatment`.
+
+**Bug real encontrado y corregido (no era desacuerdo entre médicos, como se documentó en una versión anterior de este archivo):** `_majority_vote` filtraba votos vacíos con `v is not None`, pero `pandas` representa una celda vacía de Excel como `NaN` (float), no como `None` — y `float('nan') is not None` es `True`. Es decir, **cada celda en blanco estaba entrando al conteo de votos como si fuera una respuesta real**, inflando el denominador y haciendo casi imposible alcanzar mayoría estricta. Se corrigió reemplazando el filtro por `pd.notna(v)`, que sí reconoce tanto `None` como `NaN`.
+
+**Impacto medido (antes → después de la corrección, mismo umbral de mayoría estricta, sin cambiar criterio):**
+- `stage`: 14.7% → 19.5% de cobertura.
+- `treatment`: 17.4% → **55.0%** de cobertura, y por primera vez aparece la categoría `no_treatment` (antes nunca ganaba consenso porque el "voto" `NaN` competía artificialmente contra ella).
+
+`stage` mejoró menos porque ahí la causa principal de los vacíos es otra, real y no un bug: cuando un médico marca `grade=0` (normal), casi nunca anota `stage` (verificado: >98% de las veces que `grade=0`, ese mismo rater deja `stage` y `diagnostic` en blanco para esa imagen, en los 5 raters). Eso es consistente — un ojo sin ROP no tiene estadio que anotar — pero reduce el número de votos disponibles para alcanzar el mínimo de 3. **Pendiente de decidir con el usuario:** si conviene imputar `stage=0` (y `diagnostic="revisit"`) por rater cuando su `grade==0`, para recuperar esa cobertura sin inventar nada — simulación preliminar sugiere que `stage` podría subir a ~61% y `treatment` a ~95% con ese criterio. No aplicado todavía en el script.
+
+**Nota sobre `grade` (distinto de `Label`):** la columna `grade` (valores 0-3 por rater, una de las 5×3 columnas crudas) sigue sin semántica confirmada — no se usa para construir `plus` (eso ahora viene de `Label`, ver arriba). No se encontró el texto exacto del paper (Akbari et al. 2024, DOI `10.1038/s41597-024-03897-7`, no verificado de forma independiente — ver `datasets_download/README.md`) que aclare qué mide `grade`. Se conserva sin usar en `raw_grade_per_rater` (los 5 valores separados por `;`) por si resulta útil más adelante.
 
 ### ROP-VL (`categories` → `stage`)
 
@@ -107,6 +129,16 @@ Stage 3 ROP -> 3      Laser-treated ROP -> stage=None, laser_treated=True
 
 ## Pendientes conocidos
 
-1. Confirmar semántica de la columna `grade` de FARFUM contra el paper original y completar `plus` para ese origen.
-2. Decidir si la cobertura de consenso de FARFUM (~17% en `treatment`, ~10% en `stage`) es aceptable o si conviene relajar el umbral de mayoría estricta.
+1. Confirmar contra el paper original (si se consigue acceso) que la columna `Label` de FARFUM efectivamente corresponde a Normal/Pre-Plus/Plus en ese orden — el mapeo usado es una inferencia de alta confianza por correlación, no viene declarado explícitamente en el archivo.
+2. Decidir si se imputa `stage=0`/`diagnostic="revisit"` por rater cuando ese rater marcó `grade==0` (normal) y dejó `stage`/`diagnostic` en blanco — recuperaría cobertura real de `stage` en FARFUM (actualmente 19.5%) sin inventar nada, pero es una inferencia sobre semántica clínica que conviene confirmar antes de aplicarla. No afecta a `plus` (ya 100% vía `Label`).
 3. Escribir el script de partición Group K-Fold que llena `split`/`fold` (siguiente paso, no incluido aquí).
+
+## Cobertura final por dataset y tarea
+
+Verificado corriendo el script contra los datos reales (`df.groupby('dataset_origen')[['stage','plus','treatment']].notna().mean()`):
+
+| Dataset | `stage` | `plus` | `treatment` |
+|---|---|---|---|
+| RIDIRP | 64.3% | 78.4% | 0% (no tiene esta etiqueta) |
+| FARFUM | 19.5% | **100%** | 55.0% |
+| ROP-VL | 73.0% | 0% (no tiene esta etiqueta) | 0% (no tiene esta etiqueta) |
