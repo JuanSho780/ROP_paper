@@ -2,6 +2,19 @@
 
 Documento de diseño para un modelo de IA multimodal basado en *Cross-Attention* y *Multiple Instance Learning* (MIL), diseñado para clasificar la Retinopatía del Prematuro (ROP) fusionando imágenes de fondo de ojo y variables clínicas tabulares.
 
+## Estructura del proyecto
+
+```
+ROP_paper/
+├── README.md              # este documento: arquitectura y estrategia
+├── .gitignore
+├── datasets/               # datos crudos + extraídos + manifiesto (no versionado)
+└── system/                 # todo el código del pipeline de datos
+    ├── datasets_download/  # notebooks de descarga, uno por dataset (ver su README)
+    ├── dataset_build/       # extracción + construcción del parquet unificado (ver su README)
+    └── eda/                 # análisis exploratorio, un notebook por dataset
+```
+
 ## 0. Alcance (resultado de la auditoría de datasets)
 
 El modelo optimiza **3 cabezales**, no 4:

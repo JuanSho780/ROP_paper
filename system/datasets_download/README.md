@@ -1,6 +1,6 @@
 # Descarga de Datasets
 
-Scripts usados para obtener los 4 datasets públicos del proyecto. Cada notebook descarga su dataset hacia `../datasets/<Nombre>_Original/` (fuera de esta carpeta, un nivel arriba y dentro de `datasets/`). Ejecutar desde dentro de `datasets_download/` para que las rutas relativas funcionen.
+Scripts usados para obtener los 4 datasets públicos del proyecto. Cada notebook descarga su dataset hacia `../../datasets/<Nombre>_Original/` (dos niveles arriba — `system/datasets_download/` → `system/` → raíz del proyecto — y dentro de `datasets/`). Ejecutar desde dentro de `system/datasets_download/` para que las rutas relativas funcionen.
 
 ## RIDIRP
 

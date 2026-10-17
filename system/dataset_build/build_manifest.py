@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent  # system/dataset_build/ -> ROP_paper/
 DATASETS = ROOT / "datasets"
 EXTRACTED = DATASETS / "extracted"
 MANIFEST_DIR = DATASETS / "manifest"

@@ -3,8 +3,8 @@
 Scripts que extraen los 4 datasets comprimidos y construyen el Parquet unificado que alimenta el pipeline de entrenamiento. Ejecutar en orden:
 
 ```
-python dataset_build/extract_archives.py
-python dataset_build/build_manifest.py
+python system/dataset_build/extract_archives.py
+python system/dataset_build/build_manifest.py
 ```
 
 Salida: `datasets/manifest/rop_unified_manifest.parquet` (RIDIRP + FARFUM + ROP-VL, tareas clínicas) y `datasets/manifest/hvdropdb_segmentation_manifest.parquet` (pares imagen/máscara, Fase 1). Ninguno de los dos se versiona en git (están dentro de `datasets/`, ignorado).
@@ -95,7 +95,7 @@ Aparte de `Label`, cada imagen tiene hasta 5 opiniones independientes (`grade`, 
 
 `stage` mejoró menos porque ahí la causa principal de los vacíos es otra, real y no un bug: cuando un médico marca `grade=0` (normal), casi nunca anota `stage` (verificado: >98% de las veces que `grade=0`, ese mismo rater deja `stage` y `diagnostic` en blanco para esa imagen, en los 5 raters). Eso es consistente — un ojo sin ROP no tiene estadio que anotar — pero reduce el número de votos disponibles para alcanzar el mínimo de 3. **Pendiente de decidir con el usuario:** si conviene imputar `stage=0` (y `diagnostic="revisit"`) por rater cuando su `grade==0`, para recuperar esa cobertura sin inventar nada — simulación preliminar sugiere que `stage` podría subir a ~61% y `treatment` a ~95% con ese criterio. No aplicado todavía en el script.
 
-**Nota sobre `grade` (distinto de `Label`):** la columna `grade` (valores 0-3 por rater, una de las 5×3 columnas crudas) sigue sin semántica confirmada — no se usa para construir `plus` (eso ahora viene de `Label`, ver arriba). No se encontró el texto exacto del paper (Akbari et al. 2024, DOI `10.1038/s41597-024-03897-7`, no verificado de forma independiente — ver `datasets_download/README.md`) que aclare qué mide `grade`. Se conserva sin usar en `raw_grade_per_rater` (los 5 valores separados por `;`) por si resulta útil más adelante.
+**Nota sobre `grade` (distinto de `Label`):** la columna `grade` (valores 0-3 por rater, una de las 5×3 columnas crudas) sigue sin semántica confirmada — no se usa para construir `plus` (eso ahora viene de `Label`, ver arriba). No se encontró el texto exacto del paper (Akbari et al. 2024, DOI `10.1038/s41597-024-03897-7`, no verificado de forma independiente — ver `system/datasets_download/README.md`) que aclare qué mide `grade`. Se conserva sin usar en `raw_grade_per_rater` (los 5 valores separados por `;`) por si resulta útil más adelante.
 
 ### ROP-VL (`categories` → `stage`)
 
