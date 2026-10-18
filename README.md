@@ -2,6 +2,14 @@
 
 Documento de diseño para un modelo de IA multimodal basado en *Cross-Attention* y *Multiple Instance Learning* (MIL), diseñado para clasificar la Retinopatía del Prematuro (ROP) fusionando imágenes de fondo de ojo y variables clínicas tabulares.
 
+## Caso de Uso (Despliegue)
+
+El escenario de producción confirmado: un médico sube **1 o varias fotos del examen de hoy** (mismo encuentro clínico, mismo paciente, mismo día) y el sistema predice el estado actual (Estadio, Plus, y Tratamiento cuando aplica). Esto es exactamente lo que representa **un bag de MIL** (ver §4) — el mecanismo de Cross-Attention por imagen + Attention Pooling ya está diseñado para bags de tamaño variable (1 a N fotos), así que no se necesita ningún componente adicional para soportar "una o varias fotos" en producción.
+
+**Explícitamente fuera de scope:** el sistema no usa historial de exámenes anteriores del mismo bebé para predecir el estado actual — no hay modelo de secuencia entre visitas (sin RNN/Transformer entre bags). Cada examen se evalúa de forma independiente. Esto es intencional y simplifica el despliegue: no se requiere que el médico tenga acceso a fotos previas del mismo paciente, ni que el sistema mantenga un historial por paciente entre sesiones. Si en el futuro se quisiera incorporar historial, la opción más simple sería agregar features clínicos derivados (ej. "último estadio registrado") al vector de la visita actual, no construir un modelo de secuencia.
+
+Esto también aclara por qué el PMA (edad postmenstrual, disponible solo en RIDIRP — ver §1) **no es un requisito** del sistema: es un campo opcional del vector clínico que, cuando está disponible, enriquece el Query de la Cross-Attention, pero el modelo funciona igual (con un vector clínico reducido) cuando no está presente.
+
 ## Estructura del proyecto
 
 ```
@@ -132,8 +140,8 @@ El entrenamiento se divide en tres fases para evitar que la rama tabular (de con
 - **Objetivo:** calibrar la rama clínica y los pesos de atención contra un backbone visual ya estable, sin la complejidad temporal todavía.
 - *Optimización de cómputo:* como el visual está congelado, los tokens del ViT pueden precalcularse y cachearse una sola vez (no cambian entre épocas), reduciendo drásticamente el costo de esta fase.
 
-### Fase 3: Fine-Tuning End-to-End (MIL temporal y espacial)
+### Fase 3: Fine-Tuning End-to-End (con PMA dinámico)
 
 - **Datos:** RIDIRP + ROP-VL + FARFUM-ROP (red completa descongelada).
-- **Procedimiento:** se incorpora RIDIRP, única fuente con PMA real por visita y estructura longitudinal — aquí el Query dinámico (PMA variable por visita) tiene sentido pleno. Se activan los pesos de incertidumbre ($\sigma_i$) y la pérdida enmascarada completa.
-- **Objetivo:** ajuste conjunto de toda la red a la trayectoria de la enfermedad, con MIL real a nivel de visita.
+- **Procedimiento:** se incorpora RIDIRP, única fuente con PMA real por visita — aquí el Query dinámico (PMA variable por visita) tiene sentido pleno. Se activan los pesos de incertidumbre ($\sigma_i$) y la pérdida enmascarada completa.
+- **Objetivo:** ajuste conjunto de toda la red con el vector clínico completo disponible. El mecanismo de MIL (Cross-Attention por imagen + Attention Pooling, §4.3) es el mismo en todas las fases y para las 3 fuentes — no hay un componente de secuencia entre visitas; cada bag (visita) se entrena de forma independiente, incluso en RIDIRP donde un mismo paciente aporta varios bags. Ver "Caso de Uso (Despliegue)" al inicio del documento.

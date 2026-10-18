@@ -9,7 +9,7 @@ Requiere: `pandas`, `matplotlib`, `pillow`, `openpyxl`, `rarfile` (solo para HVD
 188 pacientes, 6.004 imagenes, 484 visitas longitudinales (hasta 16 visitas en un mismo paciente). Hallazgos clave:
 - Hay que usar `images_stack_without_captions.zip`, no `images.zip` (esta ultima tiene texto de paciente/fecha quemado en el pixel para los dispositivos 2 y 3 - demostrado con comparacion de hashes).
 - La columna `series` del xlsx esta mal asignada para ~31 filas del dispositivo 3 (numero repetido en vez de incremental) - hay que alinear por PMA ascendente, no por esa columna.
-- 0 casos "Pre-Plus" en todo el dataset.
+- 0 casos "Pre-Plus" en todo el dataset, y de los 150 pacientes que quedan tras `clean_ridirp.py` (se eliminan 38 por ser 100% diagnosticos no-ROP) solo **3 tienen `Plus` alguna vez** - ver "Plus/Pre-Plus a nivel de paciente real" mas abajo.
 
 ## `eda_farfum.ipynb`
 
@@ -27,6 +27,27 @@ Requiere: `pandas`, `matplotlib`, `pillow`, `openpyxl`, `rarfile` (solo para HVD
 ## `eda_hvdropdb.ipynb`
 
 300 pares imagen/mascara de segmentacion (50 x 2 camaras x 3 estructuras), pareo verificado 1:1. El subset de Clasificacion (189 imagenes Normal/ROP) se documenta pero se deja fuera del manifiesto por no tener metadatos clinicos.
+
+## Plus/Pre-Plus a nivel de paciente real (hallazgo cross-dataset)
+
+El conteo de **imagenes** con Plus/Pre-Plus puede ser enganoso sobre cuanta diversidad real de pacientes hay detras de esa etiqueta - un paciente con muchas visitas/fotos infla el conteo de imagenes sin aportar diversidad. Contando por **paciente real** (no por imagen) en las 3 fuentes clinicas:
+
+| Dataset | Normal (pacientes) | Pre-Plus | Plus |
+|---|---|---|---|
+| RIDIRP | 147 | **0** | 3 |
+| FARFUM | 33 | 20 | 15 |
+| ROP-VL | — (no tiene esta etiqueta) | — | — |
+| **Unificado** | 180 | **20** | **18** |
+
+**RIDIRP por si solo tiene un problema real de diversidad**: toda su clase Plus depende de 3 bebes (principalmente uno, el paciente 043 con 16 visitas de AP-ROP, que por si solo genera cientos de las imagenes "Plus"). Si se entrenara solo con RIDIRP, un Group K-Fold mal hecho podria dejar folds enteros sin ningun ejemplo de Plus.
+
+**Al unificar con FARFUM, el problema se diluye de verdad** (no solo en apariencia): FARFUM aporta 35 pacientes reales distintos con Pre-Plus/Plus (no solo imagenes repetidas de pocos bebes), llevando el pool combinado a 38 pacientes con alguna forma de Plus. Sigue habiendo desbalance de *frecuencia* (38 vs 180 Normal), resoluble con las tecnicas ya planteadas (Focal Loss con pesos, `WeightedRandomSampler`), pero ya no es un problema de diversidad casi inexistente.
+
+**ROP-VL no aporta nada a esta tarea** (no tiene columna de Plus, confirmado: 0 pacientes con esta etiqueta de los 1.116).
+
+**Implicacion para el script de particion (pendiente, no resuelto aqui):** al hacer el Group K-Fold, conviene verificar explicitamente que los 38 pacientes con Plus/Pre-Plus (de RIDIRP+FARFUM combinados) queden razonablemente repartidos entre folds, en vez de asumir que el azar lo resuelve - con un grupo tan chico, un mal reparto es facil que ocurra sin querer.
+
+Reproducible con: `clean_ridirp.parquet` (RIDIRP) + `rop_unified_manifest.parquet` filtrado por `dataset_origen` (FARFUM/ROP-VL), agrupando por `patient_id_global` y viendo si `plus` fue alguna vez "Plus"/"Pre-Plus" en cualquiera de sus visitas/imagenes.
 
 ## Relacion con `system/dataset_build/`
 
