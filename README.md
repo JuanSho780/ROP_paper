@@ -4,7 +4,7 @@ Documento de diseño para un modelo de IA multimodal basado en *Cross-Attention*
 
 ## Caso de Uso (Despliegue)
 
-El escenario de producción confirmado: un médico sube **1 o varias fotos del examen de hoy** (mismo encuentro clínico, mismo paciente, mismo día) y el sistema predice el estado actual (Estadio, Plus, y Tratamiento cuando aplica). Esto es exactamente lo que representa **un bag de MIL** (ver §4) — el mecanismo de Cross-Attention por imagen + Attention Pooling ya está diseñado para bags de tamaño variable (1 a N fotos), así que no se necesita ningún componente adicional para soportar "una o varias fotos" en producción.
+El escenario de producción confirmado: un médico sube **1 o varias fotos del examen de hoy** (mismo encuentro clínico, mismo paciente, mismo día) y el sistema predice el estado actual (Estadio, Plus, y si hay signos de AP-ROP). La decisión de tratamiento queda en manos del médico — el sistema describe hallazgos, no prescribe manejo clínico (ver §0 para el razonamiento). Esto es exactamente lo que representa **un bag de MIL** (ver §4) — el mecanismo de Cross-Attention por imagen + Attention Pooling ya está diseñado para bags de tamaño variable (1 a N fotos), así que no se necesita ningún componente adicional para soportar "una o varias fotos" en producción.
 
 **Explícitamente fuera de scope:** el sistema no usa historial de exámenes anteriores del mismo bebé para predecir el estado actual — no hay modelo de secuencia entre visitas (sin RNN/Transformer entre bags). Cada examen se evalúa de forma independiente. Esto es intencional y simplifica el despliegue: no se requiere que el médico tenga acceso a fotos previas del mismo paciente, ni que el sistema mantenga un historial por paciente entre sesiones. Si en el futuro se quisiera incorporar historial, la opción más simple sería agregar features clínicos derivados (ej. "último estadio registrado") al vector de la visita actual, no construir un modelo de secuencia.
 
@@ -25,23 +25,31 @@ ROP_paper/
 
 ## 0. Alcance (resultado de la auditoría de datasets)
 
-El modelo optimiza **3 cabezales**, no 4:
+El modelo optimiza **3 cabezales**:
 
 - **Estadio** (0-5, ordinal).
 - **Enfermedad Plus** (Normal / Pre-Plus / Plus).
-- **Tratamiento** (revisita / no tratamiento / tratamiento urgente).
+- **AP-ROP** (binario: ¿hay signos de Retinopatía Agresiva Posterior?).
+
+**Decisión de alcance: se reemplazó Tratamiento por AP-ROP** (no se agregó como 4º cabezal, se sustituyó). Dos razones:
+1. **Soporte de datos:** Tratamiento solo tenía ground truth en FARFUM-ROP (68 pacientes, una sola fuente — límite de generalización real). AP-ROP tiene soporte de **2 fuentes independientes** (RIDIRP: 470 imágenes: ROP-VL: 171 imágenes), más del doble de respaldo y sin depender de un solo sitio/población.
+2. **Alcance clínico más seguro y útil:** un sistema que **describe hallazgos** (estadio, plus, AP-ROP) es más defendible que uno que **prescribe una decisión de manejo** (tratar o no) — la decisión de tratamiento real depende de más factores que la imagen sola (criterios ETROP con Zona incluida, juicio clínico, seguimiento disponible). Dejar la decisión de tratamiento al médico, dándole toda la información diagnóstica necesaria, es el diseño más apropiado para el caso de uso (ver "Caso de Uso" arriba).
 
 **Zona (I/II/III) queda fuera del scope formal del modelo.** Ninguno de los cuatro datasets públicos disponibles (RIDIRP, FARFUM-ROP, ROP-VL, HVDROPDB) incluye esta etiqueta, y no es derivable de forma confiable a partir de las otras variables. Se documenta como limitación y posible trabajo futuro (vía un dataset adicional con anotación clínica de Zona, o vía estimación semi-automática a partir de las máscaras de vascularización de HVDROPDB).
 
-El cabezal de **Tratamiento** solo tiene ground truth en **FARFUM-ROP**; se entrena con pérdida enmascarada (ver §4.4) y sus resultados se reportan explícitamente como validados en una sola fuente, no como generalizables entre poblaciones.
+**"AP-ROP" (RIDIRP) y "A-ROP" (ROP-VL) son la misma entidad clínica** — verificado contra la descripción textual que cada dataset trae de sí mismo, no asumido por similitud de nombre:
+- **RIDIRP** (hoja `diagnosis`, DG=8) la describe literalmente como: *"aggressive posterior retinopathy of prematurity"* — el nombre completo de "AP-ROP" deletreado.
+- **ROP-VL** (`disease_description.xlsx`, categoría "A-ROP") la describe con los hallazgos clínicos exactos que definen a la AP-ROP según ICROP: *"severe vasoconstriction; capillary nonperfusion; nonphysiologic dilated vascular loops; arteriovenous shunts; plus disease in zone 1; (...) diffuse flat extraretinal neovascularization (...) and severe plus disease; (...) ill-defined junction between vascular and avascular retina in zone 1"* — afectación en zona 1, plus severo, neovascularización **plana** (no la cresta clásica), progresión agresiva.
+
+Son dos convenciones de abreviación distintas ("AP-ROP" vs "A-ROP") que usaron los dos equipos de investigación para la misma entidad clínica estándar — se fusionan con confianza en un solo cabezal `ap_rop`.
 
 ## 1. Ecosistema de Datos (Ground Truth)
 
 | Dataset | Pacientes / Imágenes | Qué etiqueta aporta | Qué NO aporta |
 |---|---|---|---|
-| **RIDIRP (2024)** | 188 pac. / ~6.677 imágenes (series longitudinales) | Estadio (0-5, desbalanceado), Plus (normal/plus — sin casos pre-plus), **Edad Postmenstrual real por visita** | Zona, Tratamiento |
-| **FARFUM-ROP (2023)** | 68 pac. / 1.533 imágenes (multi-ángulo, sesión única) | Plus ("grade", verificar semántica contra el paper original), Estadio (solo 1-3), **Tratamiento** (revisit / no_treatment / treatment) | Zona, Edad Postmenstrual |
-| **ROP-VL (2025)** | 1.116 pac. / 2.020 imágenes | Estadio (0-5 completo, la fuente más balanceada) | Zona, Tratamiento, Edad Postmenstrual, Plus explícito |
+| **RIDIRP (2024)** | 188 pac. / ~6.677 imágenes (series longitudinales) | Estadio (0-5, desbalanceado), Plus (normal/plus — sin casos pre-plus), **AP-ROP** (470 imágenes), **Edad Postmenstrual real por visita** | Zona |
+| **FARFUM-ROP (2023)** | 68 pac. / 1.533 imágenes (multi-ángulo, sesión única) | Plus (columna `Label`, consenso oficial del panel de 5 médicos, confirmado contra el paper — Akbari et al. 2024, PMCID `PMC11525552`), Estadio (parcial, por consenso entre raters) | Zona, Edad Postmenstrual, AP-ROP (no se distingue en este dataset) — ya no aporta una etiqueta exclusiva propia tras retirar Tratamiento del alcance, pero sigue siendo la única fuente con 100% de cobertura en Plus |
+| **ROP-VL (2025)** | 1.116 pac. / 2.020 imágenes | Estadio (0-5 completo, la fuente más balanceada), **AP-ROP** (171 imágenes) | Zona, Edad Postmenstrual, Plus explícito |
 | **HVDROPDB v3 (2024)** | ~50 imágenes únicas × 2 cámaras | Máscaras de segmentación (vasos, cresta, disco óptico) — **sin metadatos clínicos** | Cualquier etiqueta clínica/diagnóstica |
 
 Los datos textuales presentes en ROP-VL se descartan en el preprocesamiento; solo se usan sus imágenes y metadatos biológicos estructurados.
@@ -57,7 +65,7 @@ Los datos textuales presentes en ROP-VL se descartan en el preprocesamiento; sol
 
 ### 3.1. Gestión y Almacenamiento
 
-- **Manifiesto unificado en Parquet** (no CSVs sueltos por dataset): una sola tabla con columnas estandarizadas (`sample_id`, `dataset_origen`, `patient_id_global`, `image_path`, `visita_id`, `ojo`, `GA`, `BW`, `PMA` [nullable], `sexo`, `stage`, `plus`, `treatment` [nullable], `split`, `fold`). Permite hacer el Group K-Fold global y el masking de pérdida con un solo join, sin reimplementar lógica por dataset.
+- **Manifiesto unificado en Parquet** (no CSVs sueltos por dataset): una sola tabla con columnas estandarizadas (`sample_id`, `dataset_origen`, `patient_id_global`, `image_path`, `visita_id`, `ojo`, `GA`, `BW`, `PMA` [nullable], `sexo`, `stage`, `plus`, `ap_rop` [los 3 nullable, uno por cabezal], `split`, `fold`). Permite hacer el Group K-Fold global y el masking de pérdida con un solo join, sin reimplementar lógica por dataset.
 - Las carpetas originales de cada dataset se mantienen intactas y separadas (sin fusionar ni renombrar archivos); el manifiesto apunta a ellas con rutas relativas. Esto preserva trazabilidad y permite regenerar el manifiesto si cambia el criterio de preprocesamiento.
 - **Almacenamiento local** (filesystem + manifiesto) como opción por defecto para el volumen actual (~10-15k imágenes); MinIO/bucket privado (S3/GCS/Azure) solo si el entrenamiento se mueve a una VM en la nube, y siempre **privado**, nunca público — aunque los datasets de origen son públicos, conviene verificar la licencia de cada uno antes de redistribuirlos en otro storage.
 - **Fidelidad:** conservación de imágenes en formatos sin pérdida (PNG/TIFF) para no destruir la microvasculatura periférica; MozJPEG calidad 95+ solo si hay restricción real de espacio.
@@ -113,12 +121,12 @@ Attention Pooling(vectores fusionados de la bolsa) → z (vector único de la vi
 
 - **Estadio:** clasificación ordinal (0-5), Focal Loss + matriz de penalización por distancia.
 - **Enfermedad Plus:** Normal / Pre-Plus / Plus, entropía cruzada ponderada.
-- **Tratamiento:** revisita / no tratamiento / tratamiento urgente — **pérdida enmascarada**: solo contribuye al gradiente en las muestras cuyo `dataset_origen == FARFUM` (las demás tienen `treatment = NaN` en el manifiesto y se excluyen de este término).
+- **AP-ROP (binario):** ¿hay signos de AP-ROP (Aggressive Posterior ROP)? — cabezal separado del de Estadio, no una 7ª clase dentro de él (reemplaza al cabezal de Tratamiento que estaba en versiones anteriores de este documento, ver §0 para el razonamiento del cambio). **Por qué separado de Estadio:** AP-ROP no es "más severo que Estadio 5" en una recta ordinal — es una entidad clínica distinta (localización posterior + progresión rápida + simetría, no extensión de la cresta), así que forzarla como categoría final de la escala 0-5 rompería la matriz de penalización por distancia que sí tiene sentido para 0-5. Separarlo evita rediseñar esa matriz con un criterio clínico ad-hoc. Etiqueta positiva (`ap_rop=True`) desde RIDIRP (DG=8) y ROP-VL (categoría "A-ROP", misma entidad verificada en §0); negativa desde las imágenes con Estadio numérico válido en ambas fuentes; enmascarada (sin dato) en FARFUM, que no distingue AP-ROP en absoluto, y en los casos ambiguos (RIDIRP status-post, ROP-VL Laser-treated sin AP-ROP) donde no se puede afirmar con certeza que nunca hubo AP-ROP.
 
 **Pérdida global**, balanceada dinámicamente por incertidumbre homocedástica, con máscara por tarea y por muestra:
 
 $$
-\mathcal{L}_{total} = \sum_{i \in \{estadio, plus, tratamiento\}} m_i \left( \frac{1}{2\sigma_i^2} \mathcal{L}_i + \log(\sigma_i) \right)
+\mathcal{L}_{total} = \sum_{i \in \{estadio,\ plus,\ ap\text{-}rop\}} m_i \left( \frac{1}{2\sigma_i^2} \mathcal{L}_i + \log(\sigma_i) \right)
 $$
 
 donde $m_i \in \{0,1\}$ indica si la muestra tiene ground truth disponible para la tarea $i$.

@@ -17,7 +17,7 @@ Scripts usados para obtener los 4 datasets públicos del proyecto. Cada notebook
 - **Notebook:** [`farfum_dataset.ipynb`](farfum_dataset.ipynb)
 - **Fuente:** Figshare, colección `6721269` — misma API pública que RIDIRP.
 - **Título del recurso (Figshare):** "FARFUM-RoP" (Farabi and Ferdowsi University of Mashhad's ROP dataset) — DOI de colección `10.6084/m9.figshare.c.6721269.v2`.
-- **Paper asociado (identificado por búsqueda, no por metadata directa de la API):** Akbari et al., *"FARFUM-RoP, A dataset for computer-aided detection of Retinopathy of Prematurity"*, Scientific Data, DOI `10.1038/s41597-024-03897-7` (2024). Coincide en cifras exactas (1.533 imágenes, 68 pacientes) con la descripción de la colección — *verificar antes de citar formalmente.*
+- **Paper asociado (confirmado vía Europe PMC, ya no es solo coincidencia de cifras):** Akbari M, Pourreza HR, Khalili Pour E, Dastjani Farahani A, Bazvand F, Ebrahimiadib N, Imani Fooladi M, Ramazani K F. *"FARFUM-RoP, A dataset for computer-aided detection of Retinopathy of Prematurity"*, Scientific Data, 2024. DOI `10.1038/s41597-024-03897-7`, PMCID `PMC11525552`, PMID `39478004`.
 - **Tamaño:** 68 pacientes, 1.533 imágenes de fondo de ojo, anotadas independientemente por 5 oftalmólogos pediatras (Normal / Pre-Plus / Plus).
 - **Contenido descargado:** `Dataset_Details.xlsx` (datos biométricos por paciente), `Dataset_Labels.xlsx` (etiquetas por imagen y anotador), `patientXX.rar` (imágenes, uno por paciente).
 
@@ -41,5 +41,6 @@ Scripts usados para obtener los 4 datasets públicos del proyecto. Cada notebook
 
 ## Pendientes
 
-- Confirmar/corregir los DOIs marcados como "identificados por búsqueda, no verificados" contra la fuente original antes de usarlos en la bibliografía de la tesis.
+- **FARFUM-RoP: resuelto** — paper confirmado vía Europe PMC (PMCID `PMC11525552`), ya no es pendiente.
+- Confirmar/corregir los DOIs de HVDROPDB (Agrawal et al. 2022) y ROP-VL (título/DOI no confirmado) contra la fuente original antes de usarlos en la bibliografía de la tesis.
 - Completar la fuente exacta de descarga de ROP-VL.
