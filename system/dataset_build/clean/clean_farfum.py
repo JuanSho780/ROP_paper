@@ -40,7 +40,7 @@ from pathlib import Path
 import pandas as pd
 import openpyxl
 
-ROOT = Path(__file__).resolve().parent.parent.parent  # system/dataset_build/ -> ROP_paper/
+ROOT = Path(__file__).resolve().parent.parent.parent.parent  # system/dataset_build/clean/ -> ROP_paper/
 DATASETS = ROOT / "datasets"
 RAW_DIR = DATASETS / "FARFUM_Original"
 EXTRACTED_DIR = DATASETS / "extracted" / "FARFUM"

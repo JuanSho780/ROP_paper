@@ -56,10 +56,21 @@ Los datos textuales presentes en ROP-VL se descartan en el preprocesamiento; sol
 
 ## 2. Partición de Datos y Prevención de Fuga
 
-- **Group K-Fold por `Patient_ID` global** (`dataset_origen + "_" + id_original`, para evitar colisión de IDs entre datasets), aplicado **dentro de cada una de las 3 fuentes clínicas** (RIDIRP, FARFUM-ROP, ROP-VL). Todas las imágenes, ojos y visitas longitudinales de un mismo paciente van al mismo bloque.
-- **Test set principal:** ~15-20% estratificado por Estadio (para no perder las clases raras 4/5), reservado de las 3 fuentes clínicas combinadas, nunca usado en ninguna fase de entrenamiento.
-- **Análisis secundario (robustez/dominio):** evaluación *leave-one-dataset-out* (entrenar sin una fuente, probar exclusivamente en ella) para reportar explícitamente la caída de desempeño por cambio de dominio (cámara, población, sitio clínico) — no es la métrica principal, pero es evidencia relevante para la discusión del paper.
-- **HVDROPDB** no participa de esta partición: su split train/val es interno y solo sirve para monitorear la Fase 1 (no tiene las etiquetas que el modelo final evalúa).
+**Principio general:** ningún split (en ningún dataset) parte nunca una unidad de identidad real entre train/val/test — paciente (`patient_id_global`) en los 3 datasets clínicos, foto fuente (hash MD5) en HVDROPDB, que no tiene identificador de paciente. Ver el razonamiento completo (y el caso real que lo motivó, 38/300 imágenes de HVDROPDB repetidas entre carpetas de estructura) en `system/eda/eda_hvdropdb.ipynb` y `system/dataset_build/README.md`.
+
+**Protocolo para los 3 datasets clínicos (RIDIRP, FARFUM-ROP, ROP-VL) — Fase 2/3:**
+
+1. **Test set fijo:** ~15-20%, agrupado por `patient_id_global` (`dataset_origen + "_" + id_original`, evita colisión de IDs entre datasets) y estratificado por Estadio (para no perder las clases raras 4/5). Se reserva **una sola vez, al inicio**, combinando las 3 fuentes clínicas, y no se vuelve a tocar hasta la evaluación final.
+2. **Group K-Fold (K=5)** sobre el ~80-85% restante (train+val), agrupado por `patient_id_global`, reutilizando el **mismo** backbone visual de Fase 1 en los 5 folds (Fase 1 no depende del split clínico — ver más abajo). Sirve para dos cosas: (a) obtener una métrica robusta (promedio ± desviación estándar) para reportar en la tesis, y (b) si se comparan variantes de arquitectura/hiperparámetros, elegir la que generaliza mejor en promedio entre folds, no la que "ganó" en un solo split con suerte. No se hace K-fold completo con reentrenamiento de las 3 fases — solo Fase 2/3 se repite K veces; Fase 2 además es barata de repetir porque el visual está congelado y sus tokens se cachean (§5).
+3. **Reentrenamiento final:** una vez fijada la arquitectura/hiperparámetros en base al paso 2, se entrena **un único modelo definitivo** sobre **todo** el conjunto train+val combinado (ya no se reserva validación interna, porque no se sigue comparando nada) — maximiza el uso de datos para el modelo que realmente se despliega.
+4. Ese modelo único se evalúa **una sola vez** contra el test set fijo del paso 1 — es el número principal que se reporta como resultado de la tesis, y es el mismo modelo que se expone en la API (no un ensemble de los 5 folds — complicaría el despliegue sin beneficio claro para el alcance de una tesis).
+5. **Análisis secundario, después del modelo principal:** evaluación *leave-one-dataset-out* (entrenar sin una fuente, probar exclusivamente en ella) — reutiliza la arquitectura/hiperparámetros ya fijados en el paso 3, 3 corridas adicionales (una por fuente excluida), para reportar explícitamente la caída de desempeño por cambio de dominio (cámara, población, sitio clínico) en la discusión. No es la métrica principal y no afecta cuál modelo termina en la API.
+
+**HVDROPDB (Fase 1) — fuera de este protocolo:**
+
+- No participa del Group K-Fold clínico (no tiene las etiquetas que el modelo final evalúa, ni `patient_id_global`).
+- Usa un **split único** (no K-fold), agrupado por **hash MD5 de la imagen fuente** en vez de paciente — es el identificador de identidad real disponible en este dataset (confirmado que 38 de 300 pares comparten foto entre distintas carpetas de estructura; agrupar evita que la misma foto caiga en train para una estructura y en val para otra).
+- Se queda en split único (no K=5) a propósito, aunque el dataset es chico: Fase 1 es una etapa auxiliar (dar al backbone una representación anatómica antes de Fase 2/3), no el resultado que se reporta ni se compara en la tesis — hacer K-fold ahí multiplicaría la complejidad (K backbones distintos a cruzar con los K folds clínicos) sin beneficio para lo que realmente se evalúa.
 
 ## 3. Pipeline de Preprocesamiento
 
@@ -140,6 +151,7 @@ El entrenamiento se divide en tres fases para evitar que la rama tabular (de con
 - **Datos:** exclusivamente HVDROPDB.
 - **Procedimiento:** el codificador visual (ImageNet-pretrained, aislado del resto de la red) se afina para predecir máscaras de vasos sanguíneos, cresta y disco óptico (*Dice Loss*).
 - **Objetivo:** dotar al backbone de una representación anatómica real antes de competir con la rama clínica.
+- **Validación:** split único train/val agrupado por hash de imagen (no K-fold — ver §2, es una etapa auxiliar, no el resultado reportado). El backbone resultante es **único** y se reutiliza sin cambios en los 5 folds de Fase 2/3.
 
 ### Fase 2: Warm-up Multimodal (visual congelado)
 
@@ -147,9 +159,19 @@ El entrenamiento se divide en tres fases para evitar que la rama tabular (de con
 - **Procedimiento:** congelar el encoder visual de Fase 1. Conectar el MLP clínico (vector reducido GA+BW+sexo, sin PMA) y el bloque Cross-Attention + Pooling de MIL. Entrenar MLP, fusión y cabezales.
 - **Objetivo:** calibrar la rama clínica y los pesos de atención contra un backbone visual ya estable, sin la complejidad temporal todavía.
 - *Optimización de cómputo:* como el visual está congelado, los tokens del ViT pueden precalcularse y cachearse una sola vez (no cambian entre épocas), reduciendo drásticamente el costo de esta fase.
+- **Validación:** se repite dentro de los 5 folds del Group K-Fold clínico (§2) — es la fase más barata de repetir K veces gracias al cacheo de tokens.
 
 ### Fase 3: Fine-Tuning End-to-End (con PMA dinámico)
 
 - **Datos:** RIDIRP + ROP-VL + FARFUM-ROP (red completa descongelada).
 - **Procedimiento:** se incorpora RIDIRP, única fuente con PMA real por visita — aquí el Query dinámico (PMA variable por visita) tiene sentido pleno. Se activan los pesos de incertidumbre ($\sigma_i$) y la pérdida enmascarada completa.
 - **Objetivo:** ajuste conjunto de toda la red con el vector clínico completo disponible. El mecanismo de MIL (Cross-Attention por imagen + Attention Pooling, §4.3) es el mismo en todas las fases y para las 3 fuentes — no hay un componente de secuencia entre visitas; cada bag (visita) se entrena de forma independiente, incluso en RIDIRP donde un mismo paciente aporta varios bags. Ver "Caso de Uso (Despliegue)" al inicio del documento.
+- **Validación:** igual que Fase 2, se repite dentro de los 5 folds del Group K-Fold clínico. Con la arquitectura/hiperparámetros ya elegidos en base a esos 5 folds, el modelo definitivo (el que se reporta y se expone en la API) se reentrena una última vez sobre todo train+val combinado y se evalúa una sola vez contra el test set fijo — ver §2.
+
+## 6. Explicabilidad (XAI)
+
+El modelo definitivo (§2, paso 3) no solo predice Estadio/Plus/AP-ROP — la API también devuelve una explicación de la predicción, con dos técnicas, una por cada rama de entrada:
+
+- **Rama visual — mapa de atención (Attention Rollout), no Grad-CAM literal:** Grad-CAM fue diseñado para mapas de activación convolucionales y no aplica directo a un ViT (§4.1 — se prefirió ViT sobre CNN). En vez de adaptar Grad-CAM o agregar un backbone CNN extra solo para explicabilidad, se reutilizan los pesos de **Cross-Attention por imagen** que el modelo ya calcula en producción (§4.2, Query=embedding clínico, Key/Value=tokens visuales) — esos pesos, al venir de una atención real Query-clínico→retina, se visualizan directo como mapa de calor sobre la imagen, mostrando en qué regiones se apoyó el modelo para esa predicción. Es más fiel al mecanismo real del modelo que una adaptación de Grad-CAM, a costo de no ser literalmente "Grad-CAM" (se documenta así en la tesis para no generar expectativa equivocada).
+- **Rama clínica — SHAP sobre el vector tabular:** se aplica únicamente sobre las variables de entrada al MLP clínico (GA, BW, PMA cuando exista, sexo) — es el uso estándar de SHAP (diseñado para datos tabulares de pocas variables, barato de calcular) y responde "cuánto pesó cada variable biométrica en la predicción final". No se aplica SHAP sobre píxeles de imagen — sería costoso y menos interpretable que el mapa de atención ya disponible.
+- **Momento de implementación:** después de tener el modelo definitivo (§2, paso 3) — la capa de XAI corre sobre ese único modelo ya entrenado, como parte de la respuesta de la API (predicción + mapa de calor + contribución SHAP), sin afectar el entrenamiento, el K-fold ni la elección del modelo. Queda documentado aquí como decisión de diseño; la implementación se hace en su momento, igual que el Group K-Fold y `build_manifest.py` (§3) siguen pendientes de código.

@@ -1,6 +1,8 @@
 # EDA - Analisis Exploratorio por Dataset
 
-Un notebook por dataset, cada uno explorando el **dato crudo** (xlsx/zip/rar originales en `datasets/<Nombre>_Original/`, o ya extraidos en `datasets/extracted/<Nombre>/`), independiente de las decisiones de mapeo que aplica `system/dataset_build/`. El objetivo es entender cada fuente por separado antes de unificarlas.
+Cuatro notebooks, uno por dataset, cada uno explorando el **dato crudo** (xlsx/zip/rar originales en `datasets/<Nombre>_Original/`, o ya extraidos en `datasets/extracted/<Nombre>/`), independiente de las decisiones de mapeo que aplica `system/dataset_build/`. El objetivo es entender cada fuente por separado antes de unificarlas.
+
+Un quinto notebook, `eda_unified.ipynb`, es distinto en naturaleza: explora `datasets/manifest/rop_unified_manifest.parquet`, el resultado **ya unificado** (RIDIRP+FARFUM+ROP-VL, cada uno ya pasado por su `clean_<dataset>.py` y por `build_manifest.py`) - ver su propia seccion mas abajo.
 
 Requiere: `pandas`, `matplotlib`, `pillow`, `openpyxl`, `rarfile` (solo para HVDROPDB), y el kernel de Jupyter del `.venv` del proyecto (`../../.venv`). Cada notebook asume que se ejecuta con el directorio de trabajo en `system/eda/` (abierto normalmente desde Jupyter/VSCode, o vía `jupyter nbconvert --execute` desde esta carpeta).
 
@@ -26,7 +28,16 @@ Requiere: `pandas`, `matplotlib`, `pillow`, `openpyxl`, `rarfile` (solo para HVD
 
 ## `eda_hvdropdb.ipynb`
 
-300 pares imagen/mascara de segmentacion (50 x 2 camaras x 3 estructuras), pareo verificado 1:1. El subset de Clasificacion (189 imagenes Normal/ROP) se documenta pero se deja fuera del manifiesto por no tener metadatos clinicos.
+300 pares imagen/mascara de segmentacion (50 x 2 camaras x 3 estructuras), pareo verificado 1:1. El subset de Clasificacion (189 imagenes Normal/ROP) se documenta pero se deja fuera del manifiesto por no tener metadatos clinicos. Hallazgo corregido en este notebook: las 3 estructuras NO son colecciones de fotos independientes - 38 de las 300 imagenes (12.7%) son el mismo archivo fuente reciclado entre dos carpetas de estructura (verificado por hash MD5 exhaustivo, no solo un indice de muestra). Por eso el split train/val de Fase 1 (`split_hvdropdb.py`) agrupa por `image_hash`, no por fila.
+
+## `eda_unified.ipynb` (sobre el manifiesto YA unificado, no el crudo)
+
+7.881 imagenes, 1.964 bags, 1.182 pacientes (RIDIRP 150 + FARFUM 68 + ROP-VL 964). Objetivo: desbalance de clases y patrones de nulos a nivel del **pool combinado**, como insumo directo para el script de Group K-Fold (pendiente). Hallazgos clave:
+- `stage`: las 3 fuentes tienen formas muy distintas, no solo volumen - RIDIRP es 85.5% Estadio 0 (bags con stage valido), FARFUM es **0% Estadio 0** (nunca "normal"), ROP-VL es la unica con Estadio 4/5 (84 bags) y la mas balanceada. Estratificar solo por `dataset_origen` no alcanza para el K-Fold.
+- `plus`: confirma el hallazgo cross-dataset de abajo (38 pacientes reales en todo el pool) directamente desde el manifiesto unificado, sin tener que cruzar archivos por separado.
+- `ap_rop`: 10.6% positivo entre filas con dato (634/5.969). El combo `stage=NaN, plus=valido, ap_rop=True` (16 bags) es **exclusivamente** el paciente `RIDIRP_043` (verificado 16/16) - la señal de esa combinacion depende de un solo bebe.
+- Patron de nulos cruzado: 0 bags sin ninguna de las 3 tareas (confirma que la limpieza de no-ROP de RIDIRP funciono). Las 6 combinaciones de nulos observadas son 100% explicables por el diseño de cada fuente.
+- `RIDIRP_043` (16 bags, hasta 470 imagenes) es el paciente mas grande del pool combinado - riesgo real de que un fold se quede corto de señal AP-ROP si lo excluye.
 
 ## Plus/Pre-Plus a nivel de paciente real (hallazgo cross-dataset)
 
@@ -47,8 +58,8 @@ El conteo de **imagenes** con Plus/Pre-Plus puede ser enganoso sobre cuanta dive
 
 **Implicacion para el script de particion (pendiente, no resuelto aqui):** al hacer el Group K-Fold, conviene verificar explicitamente que los 38 pacientes con Plus/Pre-Plus (de RIDIRP+FARFUM combinados) queden razonablemente repartidos entre folds, en vez de asumir que el azar lo resuelve - con un grupo tan chico, un mal reparto es facil que ocurra sin querer.
 
-Reproducible con: `clean_ridirp.parquet` (RIDIRP) + `rop_unified_manifest.parquet` filtrado por `dataset_origen` (FARFUM/ROP-VL), agrupando por `patient_id_global` y viendo si `plus` fue alguna vez "Plus"/"Pre-Plus" en cualquiera de sus visitas/imagenes.
+Reproducible directo desde `rop_unified_manifest.parquet` agrupando por `patient_id_global` y viendo si `plus` fue alguna vez "Plus"/"Pre-Plus" en cualquiera de sus visitas/imagenes - ya no hace falta cruzar `clean_ridirp.parquet` por separado (RIDIRP ya esta dentro del manifiesto unificado). Verificado con codigo real en `eda_unified.ipynb`, celda "Distribucion de `plus`".
 
 ## Relacion con `system/dataset_build/`
 
-Estos notebooks son exploratorios y **no escriben nada** - las decisiones de mapeo, consenso y reconciliacion que sí se aplican al manifiesto final estan en `system/dataset_build/build_manifest.py` y documentadas en su README. Donde los numeros de este EDA difieren levemente de los de `dataset_build` (ej. la particion exacta de bags inconsistentes en ROP-VL), se debe a que el EDA mide el dato crudo o un paso intermedio, no el resultado final tras reconciliacion - se deja la nota explicita en el notebook correspondiente.
+Los 4 notebooks por dataset son exploratorios y **no escriben nada** - las decisiones de mapeo, consenso y reconciliacion que sí se aplican al manifiesto final estan en `system/dataset_build/clean/clean_<dataset>.py` y `system/dataset_build/partition/build_manifest.py`, documentadas en el README de esa carpeta. Donde los numeros de este EDA difieren levemente de los de `dataset_build` (ej. la particion exacta de bags inconsistentes en ROP-VL), se debe a que el EDA mide el dato crudo o un paso intermedio, no el resultado final tras reconciliacion - se deja la nota explicita en el notebook correspondiente. `eda_unified.ipynb` es la excepcion: lee directamente la salida final de `build_manifest.py`, asi que sus numeros son exactos, no aproximados.

@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parent.parent.parent  # system/dataset_build/ -> ROP_paper/
+ROOT = Path(__file__).resolve().parent.parent.parent.parent  # system/dataset_build/clean/ -> ROP_paper/
 DATASETS = ROOT / "datasets"
 RAW_DIR = DATASETS / "RIDIRP_Original"
 EXTRACTED_DIR = DATASETS / "extracted" / "RIDIRP" / "images_stack_without_captions"

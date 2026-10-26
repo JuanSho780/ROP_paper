@@ -1,17 +1,37 @@
 # Construcción del Manifiesto Unificado
 
-Scripts que extraen los 4 datasets comprimidos y construyen el Parquet unificado que alimenta el pipeline de entrenamiento, en 3 etapas: **crudo → `clean_<dataset>.py` (limpio individual) → `build_manifest.py` (unificado)**.
+Scripts que extraen los 4 datasets comprimidos y construyen el Parquet unificado que alimenta el pipeline de entrenamiento, en 3 etapas: **crudo → `clean/clean_<dataset>.py` (limpio individual) → `partition/` (unificado + partición final, lista para entrenar)**.
+
+```
+system/dataset_build/
+├── extract_archives.py      # crudo -> datasets/extracted/
+├── clean/                   # datasets/extracted/ -> datasets/clean/ (limpieza por dataset, sin unir ni particionar)
+│   ├── clean_ridirp.py
+│   ├── clean_farfum.py
+│   ├── clean_ropvl.py
+│   └── clean_hvdropdb.py
+└── partition/                # datasets/clean/ -> datasets/manifest/ (unificación y/o partición final, lista para entrenar)
+    ├── build_manifest.py     # RIDIRP+FARFUM+ROP-VL -> rop_unified_manifest.parquet
+    ├── split_hvdropdb.py     # HVDROPDB.parquet + columna `split` -> datasets/manifest/HVDROPDB.parquet
+    └── group_kfold.py        # rop_unified_manifest.parquet -> agrega columnas `split`/`fold` (Group K-Fold estratificado, K=5)
+```
 
 ```
 python system/dataset_build/extract_archives.py
-python system/dataset_build/clean_ridirp.py     # -> datasets/clean/RIDIRP.parquet
-python system/dataset_build/clean_farfum.py     # -> datasets/clean/FARFUM.parquet
-python system/dataset_build/clean_ropvl.py      # -> datasets/clean/ROP-VL.parquet
-# clean_hvdropdb.py: pendiente
-# build_manifest.py: TODAVIA NO actualizado para leer de datasets/clean/ - ver "Pendientes conocidos"
+python system/dataset_build/clean/clean_ridirp.py     # -> datasets/clean/RIDIRP.parquet
+python system/dataset_build/clean/clean_farfum.py     # -> datasets/clean/FARFUM.parquet
+python system/dataset_build/clean/clean_ropvl.py      # -> datasets/clean/ROP-VL.parquet
+python system/dataset_build/clean/clean_hvdropdb.py   # -> datasets/clean/HVDROPDB.parquet
+python system/dataset_build/partition/split_hvdropdb.py  # lee datasets/clean/HVDROPDB.parquet, agrega `split` (train/val, agrupado por image_hash) -> datasets/manifest/HVDROPDB.parquet
+python system/dataset_build/partition/build_manifest.py  # lee datasets/clean/{RIDIRP,FARFUM,ROP-VL}.parquet -> datasets/manifest/rop_unified_manifest.parquet (split/fold vacios)
+python system/dataset_build/partition/group_kfold.py     # llena split/fold de rop_unified_manifest.parquet (Group K-Fold estratificado, K=5) - SIEMPRE despues de build_manifest.py
 ```
 
-Salida (una vez completa la migración): `datasets/manifest/rop_unified_manifest.parquet` (RIDIRP + FARFUM + ROP-VL, tareas clínicas) y `datasets/manifest/hvdropdb_segmentation_manifest.parquet` (pares imagen/máscara, Fase 1). Nada de esto se versiona en git (está dentro de `datasets/`, ignorado).
+Salida: `datasets/manifest/HVDROPDB.parquet` (pares imagen/máscara + split de Fase 1) y `datasets/manifest/rop_unified_manifest.parquet` (RIDIRP + FARFUM + ROP-VL, tareas clínicas, con `split`/`fold` ya llenos) — **pipeline completo**, ver "Resultados" abajo. Nada de esto se versiona en git (está dentro de `datasets/`, ignorado).
+
+**Orden importante:** `group_kfold.py` debe correr siempre **después** de `build_manifest.py` — este último sobrescribe `split`/`fold` con `None` en cada corrida (no los preserva), así que si se regenera el manifiesto hay que volver a correr `group_kfold.py` encima.
+
+**`datasets/` queda con 3 capas:** `extracted/` (crudo descomprimido) → `clean/` (limpio por dataset, individual, sin unir ni particionar) → `manifest/` (unificado y/o particionado, listo para entrenar — lo único que los scripts de modelo deberían leer).
 
 ## ⚠️ Cambio de alcance: `treatment` ya no es un cabezal del modelo
 
@@ -22,7 +42,7 @@ Las secciones de abajo sobre `clean_ridirp.py`/`clean_farfum.py` **se dejan tal 
 ## Requisitos
 
 - **7-Zip instalado** (necesario para extraer los `.rar` de FARFUM — no hay backend puro-Python para RAR5 comprimido). El script busca `7z` en el PATH y en `C:\Program Files\7-Zip\7z.exe` como fallback.
-- `pip install pandas pyarrow openpyxl`
+- `pip install pandas pyarrow openpyxl scikit-learn numpy` (`scikit-learn` solo lo usa `group_kfold.py`, para `StratifiedGroupKFold`)
 
 ## Extracción — qué se extrae de cada dataset y por qué
 
@@ -44,7 +64,7 @@ Confirmado abriendo los archivos reales (no por supuesto):
 | RIDIRP | `(patient_id, series)` — una visita real | Verificado: 484 carpetas paciente/serie = 484 filas del xlsx = 6.004 imágenes. Un paciente (043, AP-ROP) tiene 16 visitas longitudinales reales (PMA 32→56 semanas). Sin distinción de ojo (limitación del dataset). |
 | FARFUM | `patient_id` (sesión única) | Verificado: 0 pacientes con más de un UUID de sesión en sus 68 `.rar`. 1-46 imágenes/paciente, ambos ojos mezclados sin distinción. |
 | ROP-VL | `(patient_id, date, eye)` | Nuevo hallazgo: 190/1116 pacientes tienen más de una fecha (hasta 5 visitas), y 225 pacientes tienen categorías *distintas* entre sus propias imágenes (ej. un ojo Stage 3 y el otro normal el mismo día) — la etiqueta es por ojo+fecha, no replicada a nivel paciente como en FARFUM. Mayoría de bags son de 1 imagen (1719/1867), hasta 3 en algunos casos. |
-| HVDROPDB | N/A — no es MIL clínico, es `(imagen, máscara)` para segmentación | 300 pares = 50 imágenes × (Vasos/Disco/Cresta) × (Neo/RetCam). Pareo imagen↔máscara verificado 1:1 sin huérfanos. |
+| HVDROPDB | N/A — no es MIL clínico, es `(imagen, máscara)` para segmentación | 300 pares = 50 × (Vasos/Disco/Cresta) × (Neo/RetCam). Pareo imagen↔máscara verificado 1:1 sin huérfanos. **Pero esas 300 filas no son 300 fotos distintas** — ver sección dedicada más abajo: 38 filas reciclan la foto fuente de otra fila (hash MD5 idéntico), por eso el agrupador para el split de Fase 1 es `image_hash`, no la fila. |
 
 ## Problema real encontrado y corregido: columna "series" de RIDIRP
 
@@ -63,6 +83,22 @@ Verificando el parquet ya construido (no en la planificación) se encontraron **
 Primera corrección intentada (`reconcile_bag_stage` en el `build_manifest.py` original): `stage` final de un bag = **máximo** entre sus imágenes (misma lógica de MIL: basta una instancia positiva para que la bolsa sea positiva), excepto en 52 bags donde la mezcla incluía `A-ROP`/`Laser-treated ROP` junto con `normal` o un estadio numérico — ahí aplicar el máximo era clínicamente incorrecto (un ojo con láser ya tuvo ROP severa, no es "normal"), así que esos 52 quedaban con `stage=NaN`. Esto daba una cobertura de `stage` del 73%, pero dejaba el caso `A-ROP`/`Laser-treated` sin una regla limpia y motivó rediseñar todo el tratamiento de ROP-VL — ver la sección final más abajo.
 
 Se verificó con un script de consistencia que, con la regla final aplicada, **0 bags** en los 3 datasets (RIDIRP, FARFUM, ROP-VL) tienen valores clínicos (`stage`/`plus`/`treatment`) distintos entre imágenes del mismo `bag_id`.
+
+## Problema real encontrado y corregido: fotos fuente compartidas entre estructuras (HVDROPDB)
+
+El notebook original (`eda_hvdropdb.ipynb`) afirmaba que las 3 estructuras de segmentación (Vasos/Disco/Cresta) eran "colecciones independientes de 50 fotos cada una" — verificado comparando solo el archivo `1.png` y solo la cámara Neo. Un hash MD5 **exhaustivo** de las 300 imágenes (no las máscaras) contra todas las demás corrigió esa conclusión: solo **262 fotos fuente distintas** explican las 300 filas — **38 imágenes (12.7%) son el mismo archivo exacto** reciclado bajo otra carpeta de estructura, con una máscara distinta cada vez (0 máscaras duplicadas):
+
+| Comparten foto | Cantidad |
+|---|---|
+| `BV/RetCam` ↔ `OD/RetCam` | 25 |
+| `BV/Neo` ↔ `RIDGE/Neo` | 10 |
+| `BV/RetCam` ↔ `RIDGE/RetCam` | 3 |
+
+Ninguna foto aparece en las 3 estructuras a la vez, y `OD`/`RIDGE` nunca comparten foto entre sí.
+
+**Por qué importa:** HVDROPDB alimenta solo la Fase 1 (pre-entrenamiento visual del ViT, ver README principal §5) y usa un split train/val propio, no el Group K-Fold clínico (no tiene `patient_id`). Si ese split se hiciera al azar por fila, una de las 38 fotos recicladas podría caer en train para una estructura y en val para otra — el backbone ya habría visto esos píxeles en entrenamiento, inflando el Dice de validación (fuga de información visual, mismo principio que el Group K-Fold por paciente evita en los 3 datasets clínicos).
+
+**Solución aplicada:** `clean_hvdropdb.py` calcula y guarda `image_hash` (MD5) por fila. `split_hvdropdb.py` (script aparte, no K-fold — ver README principal §2: Fase 1 es una etapa auxiliar, no el resultado que se reporta, así que no se justifica el costo de cross-validation completa ahí) agrupa por `image_hash` antes de repartir train/val (80/20, semilla fija), garantizando que cada foto cae siempre del mismo lado. Verificado: 0 fotos con split inconsistente entre sus filas.
 
 ## Mapeo de etiquetas — decisiones y pendientes
 
@@ -136,28 +172,42 @@ Se evaluaron dos opciones para los bags donde una imagen es `Laser-treated ROP` 
 
 **Resultado final:** 1.522 de 1.867 bags, 1.639 de 2.020 imágenes. `stage` con 91.7% de cobertura sobre los bags finales; `ap_rop=True` en 145 bags, `False` en 1.377.
 
-## ⚠️ Secciones desactualizadas (pipeline anterior, antes de `clean_ridirp.py`/`clean_farfum.py`)
+## Esquema del manifiesto unificado (vigente — `build_manifest.py` ya reescrito para leer `datasets/clean/*.parquet`)
 
-Las dos secciones siguientes describen la salida de `build_manifest.py` tal como estaba **antes** de separar la limpieza por dataset — usan el consenso viejo de FARFUM (mínimo 3 votos, mayoría estricta: 19.5%/55.0%) en vez del actual (severidad máxima, sin mínimo: 99.0%/100%, ver arriba), y no reflejan que RIDIRP ahora elimina las filas no-ROP. Se quedan como referencia histórica hasta que `build_manifest.py` se reescriba para consumir `datasets/clean/*.parquet` (pendiente #5 arriba) — ahí se documentará el esquema final completo, con descripciones de columna.
-
-## Esquema del manifiesto unificado
-
-`rop_unified_manifest.parquet` (9.557 filas: 6.004 RIDIRP + 1.533 FARFUM + 2.020 ROP-VL):
+`rop_unified_manifest.parquet` (7.881 filas: 4.709 RIDIRP + 1.533 FARFUM + 1.639 ROP-VL — ya con los filtros de cada `clean_<dataset>.py` aplicados, no las cifras crudas):
 
 | Columna | Tipo | Notas |
 |---|---|---|
 | `sample_id` | str | única por imagen |
 | `bag_id` | str | agrupador de MIL, ver tabla de granularidad arriba |
 | `dataset_origen` | str | `RIDIRP` / `FARFUM` / `ROP-VL` |
-| `patient_id_global` | str | prefijado por dataset, sin colisiones |
+| `patient_id_global` | str | prefijado por dataset (`RIDIRP_`/`FARFUM_`/`ROPVL_`), sin colisiones — heredado directo de cada `clean_<dataset>.py` |
 | `image_path` | str | relativa a `datasets/extracted/` |
-| `sexo`, `GA`, `BW`, `PMA` | — | `PMA` solo poblado para RIDIRP; `pma_available` indica si aplica |
-| `stage`, `plus`, `treatment` | float/str, nullable | `None` = sin ground truth para esa tarea en esa fila — así se implementa el masking de la pérdida multitarea |
-| `ap_rop`, `status_post_rop`, `is_rop_eligible`, `laser_treated` | bool | flags de casos especiales, ver mapeos arriba |
-| `raw_diagnosis_code`, `raw_grade_per_rater` | str, nullable | trazabilidad a la etiqueta original sin procesar |
-| `split`, `fold` | — | **vacíos a propósito** — los llena el siguiente script (partición Group K-Fold), todavía no escrito |
+| `sexo`, `GA`, `BW`, `PMA` | — | `PMA` solo poblado para RIDIRP |
+| `pma_available` | bool | `PMA.notna()` — `True` solo para RIDIRP |
+| `stage` | float, nullable | 0-5; `None` = sin ground truth para esa fila (masking de la pérdida) |
+| `plus` | str, nullable | `Normal`/`Pre-Plus`/`Plus`; `None` en el 100% de ROP-VL (no tiene esta etiqueta) |
+| `ap_rop` | bool, nullable | `True`/`False`/`None` — **`None` no es lo mismo que `False`**: se enmascara (no se asume negativo) en el 100% de FARFUM (no distingue AP-ROP) y en las filas `status_post_rop` de RIDIRP (ojo ya tratado/regresado, no se puede afirmar que nunca tuvo AP-ROP). Ver docstring de `build_manifest.py` para el detalle completo. |
+| `split`, `fold` | — | **vacíos a propósito** — los llena el script de Group K-Fold clínico, todavía no escrito (pendiente #8) |
 
-`hvdropdb_segmentation_manifest.parquet` (300 filas): `pair_id`, `structure` (BV/OD/RIDGE), `camera` (Neo/RetCam), `image_path`, `mask_path`.
+**`treatment` ya no aparece aquí** (cabezal retirado del alcance, ver banner arriba) — sigue calculado en `datasets/clean/RIDIRP.parquet`/`FARFUM.parquet` por consistencia histórica, pero `build_manifest.py` lo descarta al unificar. `device_raw` (RIDIRP) también se descarta — metadata de la capa limpia individual, nunca feature de entrada.
+
+`datasets/manifest/HVDROPDB.parquet` (300 filas, ya construido — ver "Resultados" abajo): `pair_id`, `structure` (BV/OD/RIDGE), `camera` (Neo/RetCam), `image_path`, `mask_path`, `image_hash` (MD5, agrupador del split), `split` (`train`/`val`). HVDROPDB no pasa por `build_manifest.py` — no hay nada que unificar (una sola fuente) y no participa del Group K-Fold clínico.
+
+## Resultados: `build_manifest.py`
+
+Esquema y decisiones de unificación completas documentadas en la sección de arriba. Validado corriendo el script contra `datasets/clean/*.parquet` ya generados:
+
+| | Valor |
+|---|---|
+| Imágenes | 7.881 (4.709 RIDIRP + 1.533 FARFUM + 1.639 ROP-VL) |
+| Bags | 1.964 (374 + 68 + 1.522) |
+| Pacientes | 1.182 (150 + 68 + 964) |
+| `stage` nulo | 12.6% |
+| `plus` nulo | 20.8% (exactamente el 100% de ROP-VL, 0% en RIDIRP/FARFUM — verificado) |
+| `ap_rop` | `True`=634 (470 RIDIRP + 164 ROP-VL), `False`=5.335, nulo=24.3% (1.533 FARFUM + 379 RIDIRP status-post) |
+
+Verificado: 0 `sample_id`/`image_path` duplicados, 0 paths faltantes, `stage` solo toma valores 0-5, `plus` exactamente 3 valores, `ap_rop` exactamente `{True, False, None}`, 0 bags con `stage`/`plus`/`ap_rop` inconsistente entre sus imágenes, 0 colisiones de `patient_id_global` entre datasets, `pma_available` coherente por fuente, `split`/`fold` vacíos como se espera.
 
 ## Resultados: `clean_ridirp.py`
 
@@ -202,22 +252,53 @@ Esquema y decisiones completas (regla conservadora de eliminación por `Laser-tr
 
 Verificado: 0 `sample_id`/`image_path` duplicados, `stage` solo toma valores 0-5, 0 bags con `stage`/`ap_rop` inconsistente entre sus imágenes, 0 paths faltantes, 0 imágenes `Laser-treated ROP` sobreviven en el parquet final.
 
+## Resultados: `clean_hvdropdb.py` + `split_hvdropdb.py`
+
+Esquema y decisiones completas (38/300 fotos compartidas entre estructuras, split por `image_hash` en vez de paciente) documentadas en "Problema real encontrado y corregido: fotos fuente compartidas entre estructuras (HVDROPDB)" arriba y en `system/eda/eda_hvdropdb.ipynb`. Validado corriendo ambos scripts contra los datos reales:
+
+| | Valor |
+|---|---|
+| Pares (imagen, máscara) | 300 (50 × 2 cámaras × 3 estructuras) |
+| Fotos fuente distintas (`image_hash` único) | 262 |
+| Split | `train`: 240 filas · `val`: 60 filas (80/20, agrupado por `image_hash`, semilla fija) |
+| Reparto por estructura/cámara | entre 7 y 17 de 50 en val por combinación — balance razonable dado el agrupamiento por foto, no se fuerza estratificación |
+
+Verificado: 0 `pair_id` duplicados, 0 `image_path`/`mask_path` faltantes, 0 fotos (`image_hash`) con `split` inconsistente entre sus filas (ninguna foto cae partida entre train y val).
+
+## Resultados: `group_kfold.py`
+
+Estrategia completa (llave de estratificación compuesta por paciente, dos pasadas de `StratifiedGroupKFold`) documentada en el docstring de `group_kfold.py` y en `system/eda/eda_unified.ipynb`. Validado corriendo el script contra el manifiesto unificado real:
+
+| | Valor |
+|---|---|
+| Test fijo | 237 pacientes (20.1%) — 8 con Plus/Pre-Plus, 22 con AP-ROP confirmado |
+| Folds de train (K=5) | ~189 pacientes cada uno (190/189/189/189/188) |
+| Plus/Pre-Plus por fold | 5, 7, 6, 6, 6 (+ 8 en test = 38 total, exacto) |
+| AP-ROP confirmado por fold | 17, 16, 16, 16, 15 (+ 22 en test = 102 total, exacto) |
+| `stage` 4/5 (bags severos) por fold | 16, 12, 15, 11, 14 (+ 16 en test = 84 total, exacto) |
+| Mezcla de `dataset_origen` por fold | proporcional en los 5 folds y en test (RIDIRP ~22-31, FARFUM ~10-13, ROP-VL ~153-193 pacientes) — ningún fold queda dominado por una sola fuente |
+
+Verificado: 0 `patient_id_global` repetido entre folds o entre train/test (fuga), los totales de Plus/AP-ROP/severos por fold suman exacto el total del pool (38/102/84), ninguna clase rara queda en 0 en ningún fold ni en test.
+
 ## Pendientes conocidos
 
 1. ~~Confirmar contra el paper original que la columna `Label` de FARFUM corresponde a Normal/Pre-Plus/Plus~~ — **resuelto**: confirmado textualmente contra Akbari et al. 2024 (PMCID `PMC11525552`), ver sección FARFUM arriba.
 2. ~~Decidir si se imputa `stage=0` cuando `grade==0`~~ — **resuelto, descartado**: `grade=0` significa "no especificado" según el paper, no "normal" — imputar en base a esa premisa habría sido incorrecto.
 3. ~~Escribir `clean_farfum.py`~~ — **resuelto**, ver resultados arriba.
 4. ~~Decidir la regla de ROP-VL para bags mixtos (`A-ROP`/`Laser-treated ROP` combinados con `normal` o estadios numéricos) y para el cabezal AP-ROP~~ — **resuelto**: se descartó la idea de "voto mayoritario" (verificado con datos reales: los 54 bags mixtos tienen empate 1 a 1, no existe mayoría) y se eligió la opción conservadora — cualquier bag que toque `Laser-treated ROP` se elimina completo. Ver "ROP-VL — regla final" arriba y `system/eda/eda_ropvl.ipynb`.
-5. ~~Escribir `clean_ropvl.py`~~ — **resuelto**, ver resultados arriba. Falta `clean_hvdropdb.py` (siguiente paso; estructura distinta — pares imagen/máscara de segmentación, no filas clínicas).
-6. Reescribir `build_manifest.py` para que combine `datasets/clean/*.parquet` en vez de leer el crudo directamente — las secciones "Esquema del manifiesto unificado" y "Cobertura final por dataset y tarea" más abajo describen el pipeline **anterior** (monolítico, consenso con mínimo de 3 votos) y están desactualizadas respecto a `clean_ridirp.py`/`clean_farfum.py`/`clean_ropvl.py`. Se reescriben completas (con descripción de columnas) cuando se arme el parquet unificado final.
-7. Escribir el script de partición Group K-Fold que llena `split`/`fold`.
+5. ~~Escribir `clean_ropvl.py`~~ — **resuelto**, ver resultados arriba.
+6. ~~Escribir `clean_hvdropdb.py` y resolver el split de Fase 1~~ — **resuelto**: hash exhaustivo encontró 38/300 fotos compartidas entre estructuras (corrige una conclusión errónea del EDA original), `clean_hvdropdb.py` calcula `image_hash` por fila, `split_hvdropdb.py` (script aparte, no K-fold) agrupa por hash y asigna train/val 80/20. Ver resultados arriba. **Todos los `clean_<dataset>.py` de los 4 datasets están completos.**
+7. ~~Reescribir `build_manifest.py` para que combine `datasets/clean/*.parquet` en vez de leer el crudo directamente~~ — **resuelto**: ver "Esquema del manifiesto unificado" y "Resultados: `build_manifest.py`" arriba (7.881 imágenes, 1.964 bags, 1.182 pacientes; `treatment`/`device_raw` descartados al unificar; `ap_rop` enmascarado — no `False` — en FARFUM completo y en status-post de RIDIRP).
+8. ~~Escribir el script de partición Group K-Fold (K=5, agrupado por `patient_id_global`, estratificado)~~ — **resuelto**: `group_kfold.py` ya escrito, ejecutado y validado — ver "Resultados: `group_kfold.py`" arriba. **El pipeline de datos completo (los 4 datasets, manifiesto clínico unificado y particionado, manifiesto de Fase 1) está terminado.** Siguiente paso del proyecto: Fase 1 (fine-tuning/transfer learning del ViT sobre HVDROPDB), fuera del alcance de `dataset_build/`.
 
 ## Cobertura final por dataset y tarea
 
-Verificado corriendo el script contra los datos reales (`df.groupby('dataset_origen')[['stage','plus','treatment']].notna().mean()`):
+Verificado corriendo `build_manifest.py` contra los datos reales (`df.groupby('dataset_origen')[['stage','plus']].notna().mean()`; `ap_rop` se reporta aparte por ser nullable de 3 valores, no solo cobertura binaria):
 
-| Dataset | `stage` | `plus` | `treatment` |
+| Dataset | `stage` | `plus` | `ap_rop` (True / False / nulo) |
 |---|---|---|---|
-| RIDIRP | 64.3% | 78.4% | 0% (no tiene esta etiqueta) |
-| FARFUM | 19.5% | **100%** | 55.0% |
-| ROP-VL | 73.0% | 0% (no tiene esta etiqueta) | 0% (no tiene esta etiqueta) |
+| RIDIRP | 82.0% (3.860/4.709) | 100% | 470 / 3.860 / 379 (nulo = status-post) |
+| FARFUM | 99.0% (1.518/1.533) | 100% | 0 / 0 / 1.533 (nulo = 100%, sin esta etiqueta) |
+| ROP-VL | 92.3% (1.513/1.639, por imagen) | 0% (no tiene esta etiqueta) | 164 / 1.475 / 0 |
+
+`treatment` ya no se reporta aquí — descartado del manifiesto unificado (ver banner "Cambio de alcance" arriba).
