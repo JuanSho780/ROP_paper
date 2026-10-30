@@ -3,9 +3,12 @@
 # y funcionando en el .venv de este proyecto (Python del .venv, no el "python3"
 # global del sistema - ver notas de environment del proyecto).
 #
-# Fase 1 en adelante (fine-tuning del ViT, entrenamiento del modelo) agregara
-# sus propias dependencias (torch, torchvision, etc.) cuando se implemente -
-# todavia no estan en este archivo.
+# Fase 1 (fine-tuning del ViT en HVDROPDB, system/training/phase1_segmentation/)
+# ya agrego sus dependencias mas abajo. torch/torchvision se instalaron con
+# CUDA 12.8 (indice https://download.pytorch.org/whl/cu128) - necesario para
+# que una GPU Blackwell (ej. RTX 50xx, compute capability 12.0) funcione de
+# verdad y no solo "se instale"; instalarlos sueltos desde PyPI normal da la
+# build CPU-only. Verificado con una operacion real en GPU, no solo import.
 
 # --- datos tabulares / parquet ---
 pandas==3.0.6
@@ -32,3 +35,11 @@ requests==2.34.2
 jupyter==1.1.1
 ipykernel==7.4.0
 notebook==7.6.3
+
+# --- Fase 1: fine-tuning ViT en HVDROPDB (system/training/phase1_segmentation/) ---
+# instalar torch/torchvision con: pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+timm==1.0.30
+albumentations==2.0.8
+opencv-python-headless==5.0.0.93
