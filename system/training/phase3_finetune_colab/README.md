@@ -13,23 +13,28 @@
 
 ## Qué subir a Google Drive antes de correrlo
 
-Una carpeta `MyDrive/ROP_paper_colab_data/` con:
+Ya está armado localmente en `datasets/colab_upload/` — solo falta subirlo tal cual a tu Drive, como una carpeta `MyDrive/ROP_paper_colab_data/`:
 
 ```
 ROP_paper_colab_data/
-├── extracted/
-│   ├── RIDIRP/      (2.5GB)
-│   ├── FARFUM/       (2.1GB)
-│   └── ROP-VL/        (673MB)
+├── RIDIRP.zip                (2.61GB, 6.004 archivos adentro)
+├── FARFUM.zip                 (2.16GB, 1.533 archivos adentro)
+├── ROP-VL.zip                  (0.70GB, 2.022 archivos adentro)
 ├── manifest/
 │   └── rop_unified_manifest.parquet
 ├── checkpoints_phase1/
-│   └── backbone_best.pt   (329MB)
+│   └── backbone_best.pt       (329MB)
 └── checkpoints_phase2/
     └── fold0_best.pt ... fold4_best.pt   (18MB los 5)
 ```
 
-Total ≈ 5.65GB. **No hace falta `HVDROPDB` ni `cached_tokens`** (eran solo para Fase 1/2 — Fase 3 no cachea tokens, calcula en vivo porque el backbone cambia).
+Total ≈ 5.86GB, **10 archivos** (en vez de ~9.560 archivos sueltos) — por eso los 3 datasets se comprimieron en `.zip` antes: subir miles de archivos individuales por la web de Drive es lento y poco confiable (se puede colgar o saltarse archivos sin avisar). El notebook los descomprime del lado de Colab (paso 4).
+
+**Cómo subir `datasets/colab_upload/`:**
+- **Opción recomendada — Google Drive para escritorio**: instalá la app de Drive para Windows, te crea una carpeta sincronizada (normalmente en el Explorador de Windows) — copiá/pegá `datasets/colab_upload/` ahí dentro (renombrala a `ROP_paper_colab_data` si querés) y se sube sola en segundo plano. Mucho más confiable que la web para ~6GB.
+- **Alternativa — web (drive.google.com)**: arrastrar y soltar la carpeta completa funciona, pero con archivos de este tamaño puede tardar bastante y conviene no cerrar la pestaña hasta que termine.
+
+**No hace falta `HVDROPDB` ni `cached_tokens`** (eran solo para Fase 1/2 — Fase 3 no cachea tokens, calcula en vivo porque el backbone cambia).
 
 ## Qué hace el notebook, en orden
 
@@ -37,7 +42,7 @@ Total ≈ 5.65GB. **No hace falta `HVDROPDB` ni `cached_tokens`** (eran solo par
 2. Monta Drive.
 3. Clona el repo de GitHub (`JuanSho780/ROP_paper`) — **el código tiene que estar pusheado antes de correr esto**.
 4. Instala solo lo que falta (`timm`, `albumentations`, `opencv-python-headless`) — no reinstala `torch`/`torchvision` para no romper la build de CUDA que Colab ya trae preinstalada y emparejada con su propio driver.
-5. Copia los datos de Drive al disco local de Colab (más rápido para I/O de miles de imágenes que leer directo desde Drive montado).
+5. Descomprime los 3 `.zip` + copia manifiesto/checkpoints al disco local de Colab (más rápido para I/O de miles de imágenes que leer directo desde Drive montado).
 6. Verifica que el manifiesto, los 3 datasets y los 6 checkpoints de warm-start estén en su lugar — antes de lanzar horas de entrenamiento, no después.
 7. Corre `train.py` **sin modificar**, con `BATCH_SIZE=8`/`MAX_BAG_SIZE=8` tal cual — `NUM_WORKERS` se recalcula solo según los núcleos reales de la máquina de Colab (misma lógica que local).
 8. Copia los checkpoints resultantes de vuelta a Drive (el disco local de Colab se borra al cerrar la sesión).
