@@ -34,66 +34,31 @@ system/training/phase1_segmentation/README.md para el detalle):
   timm (NO los genericos de ImageNet - este checkpoint en particular usa
   mean=std=0.5, verificado con timm.data.resolve_data_config).
 """
+import sys
 from pathlib import Path
 
-import albumentations as A
 import cv2
 import numpy as np
 import pandas as pd
 import torch
-from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent  # system/training/phase1_segmentation/ -> ROP_paper/
 EXTRACTED_DIR = ROOT / "datasets" / "extracted"
 MANIFEST_PATH = ROOT / "datasets" / "manifest" / "HVDROPDB.parquet"
 
+sys.path.insert(0, str(ROOT / "system" / "training"))
+from common.image_preprocessing import (  # noqa: E402
+    IMG_SIZE,
+    build_geometric_transform,
+    clahe_green_channel,
+    crop_dark_border,
+)
+
 STRUCTURES = ["BV", "OD", "RIDGE"]  # orden fijo = orden de canal de salida del modelo
 STRUCTURE_TO_CHANNEL = {s: i for i, s in enumerate(STRUCTURES)}
 
-IMG_SIZE = 384
 MASK_BINARIZE_THRESH = 127
-
-
-def crop_dark_border(image: np.ndarray, thresh: int = 10) -> tuple[int, int, int, int]:
-    """Bounding box (r0, r1, c0, c1) del contenido no-negro (vineta del retinografo)."""
-    gray = image.astype(np.float32).mean(axis=2)
-    content = gray > thresh
-    rows = np.where(content.any(axis=1))[0]
-    cols = np.where(content.any(axis=0))[0]
-    if len(rows) == 0 or len(cols) == 0:
-        return 0, image.shape[0], 0, image.shape[1]
-    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
-
-
-def clahe_green_channel(image: np.ndarray, clip_limit: float = 2.0) -> np.ndarray:
-    """Aplica CLAHE solo al canal verde (RGB) y devuelve la imagen RGB reconstruida."""
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-    out = image.copy()
-    out[:, :, 1] = clahe.apply(image[:, :, 1])
-    return out
-
-
-def build_geometric_transform(train: bool, mean: tuple, std: tuple) -> A.Compose:
-    ops = [
-        A.LongestMaxSize(max_size=IMG_SIZE, interpolation=cv2.INTER_LINEAR, mask_interpolation=cv2.INTER_NEAREST),
-        A.PadIfNeeded(
-            min_height=IMG_SIZE, min_width=IMG_SIZE,
-            border_mode=cv2.BORDER_CONSTANT, fill=0, fill_mask=0,
-        ),
-    ]
-    if train:
-        ops += [
-            A.Rotate(limit=180, border_mode=cv2.BORDER_CONSTANT, fill=0, fill_mask=0,
-                      interpolation=cv2.INTER_LINEAR, mask_interpolation=cv2.INTER_NEAREST, p=1.0),
-            A.HorizontalFlip(p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.0, p=0.5),
-        ]
-    # Nota: se probo sumar zoom/traslacion leve (Affine) + deformacion elastica suave
-    # (ElasticTransform) - bajo mean_dice de 0.6012 a 0.5881 (OD empeoro bastante, BV
-    # no mejoro) - revertido. Ver README de esta carpeta, seccion "Revision 3".
-    ops += [A.Normalize(mean=mean, std=std), ToTensorV2()]
-    return A.Compose(ops)
 
 
 class HVDROPDBSegmentationDataset(Dataset):
